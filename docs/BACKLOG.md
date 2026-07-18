@@ -163,6 +163,20 @@ checks. One seven-step todo contract passes baseline and semantic-refactor varia
 contexts; broken persistence returns `REGRESSION` with `LOCATOR_MISSING` at step 6. The escaped Local
 Cooperative terminal summary contains no time-dependent fields. ADR-0010 records the boundary.
 
+### SW-007A: Deterministic Page Topology Observation
+
+**Status:** Complete on 2026-07-19. See
+[GitHub issue #15](https://github.com/datzle123/MergeVow/issues/15).
+
+**Objective:** Remove the platform race in fixed-delay popup observation.
+
+**Acceptance criteria:** an explicit Chromium target barrier retains open and immediately closed
+auxiliary pages without wall-clock settlement; repeated driver runs and three-platform CI pass.
+
+**Outcome:** the driver discovers page targets for the exact browser-context ID, retains target
+creation events, and snapshots current targets before and after every operation. This removes the
+50 ms heuristic exposed by post-merge Windows CI while preserving truthful current/maximum evidence.
+
 ## Ready Issues
 
 ### SW-008: Recorder Action Capture

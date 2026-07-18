@@ -14,6 +14,11 @@ import type {
   NetworkGuardViolation,
   NetworkTransportFailure,
 } from "./network.js";
+import {
+  createPageTopologyObservation,
+  type PageTopologyObservation,
+  type PageTopologySnapshot,
+} from "./topology.js";
 
 export const DRIVER_STEP_CODES = {
   checkedMismatch: "CHECKED_MISMATCH",
@@ -63,7 +68,6 @@ export interface PlaywrightDriverOptions {
 export type PlaywrightInterpreterDriver = InterpreterDriver;
 
 const PASS_RESULT: DriverStepResult = Object.freeze({ ok: true });
-const POST_OPERATION_OBSERVATION_MS = 50;
 
 function boundedString(value: string, maximum: number): string {
   return value.length <= maximum ? value : `${value.slice(0, maximum - 3)}...`;
@@ -114,27 +118,28 @@ function locatorMismatch(
 
 function infrastructureError(
   options: PlaywrightDriverOptions,
-  maximumObservedPages: number,
+  topology: PageTopologySnapshot,
 ): PlaywrightDriverInfrastructureError | undefined {
-  const violation = options.guardedContext.getViolation();
-  if (violation !== undefined) {
-    return new PlaywrightDriverInfrastructureError(violation);
-  }
-  const transportFailure = options.guardedContext.getTransportFailure();
-  if (transportFailure !== undefined) {
-    return new PlaywrightDriverInfrastructureError(transportFailure);
+  const retainedError = retainedInfrastructureError(options);
+  if (retainedError !== undefined) {
+    return retainedError;
   }
   const pages = options.guardedContext.context.pages();
-  if (maximumObservedPages > 1 || pages.length !== 1 || pages[0] !== options.page) {
+  if (
+    topology.maximumObservedPages > 1 ||
+    topology.currentPages !== 1 ||
+    pages.length !== 1 ||
+    pages[0] !== options.page
+  ) {
     const message =
-      maximumObservedPages > 1
-        ? `Expected one controlled page; observed up to ${maximumObservedPages} during replay (${pages.length} currently).`
-        : `Expected one controlled page; observed ${pages.length} currently.`;
+      topology.maximumObservedPages > 1
+        ? `Expected one controlled page; observed up to ${topology.maximumObservedPages} during replay (${topology.currentPages} currently).`
+        : `Expected one controlled page; observed ${topology.currentPages} currently.`;
     return new PlaywrightDriverInfrastructureError(
       Object.freeze({
         code: PLAYWRIGHT_DRIVER_INFRA_CODES.unsupportedPageTopology,
-        currentPages: pages.length,
-        maximumObservedPages,
+        currentPages: topology.currentPages,
+        maximumObservedPages: topology.maximumObservedPages,
         message,
       }),
     );
@@ -142,11 +147,31 @@ function infrastructureError(
   return undefined;
 }
 
+function retainedInfrastructureError(
+  options: PlaywrightDriverOptions,
+): PlaywrightDriverInfrastructureError | undefined {
+  const violation = options.guardedContext.getViolation();
+  if (violation !== undefined) {
+    return new PlaywrightDriverInfrastructureError(violation);
+  }
+  const transportFailure = options.guardedContext.getTransportFailure();
+  return transportFailure === undefined
+    ? undefined
+    : new PlaywrightDriverInfrastructureError(transportFailure);
+}
+
+function assertRetainedInfrastructureHealthy(options: PlaywrightDriverOptions): void {
+  const error = retainedInfrastructureError(options);
+  if (error !== undefined) {
+    throw error;
+  }
+}
+
 function assertInfrastructureHealthy(
   options: PlaywrightDriverOptions,
-  maximumObservedPages: number,
+  topology: PageTopologySnapshot,
 ): void {
-  const error = infrastructureError(options, maximumObservedPages);
+  const error = infrastructureError(options, topology);
   if (error !== undefined) {
     throw error;
   }
@@ -156,17 +181,14 @@ function cancellationError(): DOMException {
   return new DOMException("Playwright driver operation was cancelled.", "AbortError");
 }
 
-function observeImmediateBrowserEvents(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, POST_OPERATION_OBSERVATION_MS));
-}
-
 async function runOperation<T>(
   options: PlaywrightDriverOptions,
-  getMaximumObservedPages: () => number,
+  topology: PageTopologyObservation,
   context: StepExecutionContext,
   operation: () => Promise<T>,
 ): Promise<T> {
-  assertInfrastructureHealthy(options, getMaximumObservedPages());
+  assertRetainedInfrastructureHealthy(options);
+  assertInfrastructureHealthy(options, await topology.synchronize());
   if (context.signal.aborted) {
     await options.page.close().catch(() => undefined);
     throw cancellationError();
@@ -186,12 +208,12 @@ async function runOperation<T>(
 
   try {
     const value = await Promise.race([Promise.resolve().then(operation), cancelled]);
-    await observeImmediateBrowserEvents();
-    assertInfrastructureHealthy(options, getMaximumObservedPages());
+    assertRetainedInfrastructureHealthy(options);
+    assertInfrastructureHealthy(options, await topology.synchronize());
     return value;
   } catch (error) {
-    await observeImmediateBrowserEvents();
-    assertInfrastructureHealthy(options, getMaximumObservedPages());
+    assertRetainedInfrastructureHealthy(options);
+    assertInfrastructureHealthy(options, await topology.synchronize());
     throw error;
   } finally {
     if (onAbort !== undefined) {
@@ -202,13 +224,13 @@ async function runOperation<T>(
 
 async function withUniqueLocator(
   options: PlaywrightDriverOptions,
-  getMaximumObservedPages: () => number,
+  topology: PageTopologyObservation,
   locator: ContractLocator,
   context: StepExecutionContext,
   operation: (locator: PlaywrightLocator) => Promise<DriverStepResult>,
   includeHidden = false,
 ): Promise<DriverStepResult> {
-  return runOperation(options, getMaximumObservedPages, context, async () => {
+  return runOperation(options, topology, context, async () => {
     const resolution = await resolveUniqueLocator(options.page, locator, { includeHidden });
     return resolution.ok ? operation(resolution.value.locator) : locatorMismatch(resolution);
   });
@@ -229,24 +251,11 @@ export function createPlaywrightDriver(
   if (options.page.context() !== options.guardedContext.context) {
     throw new TypeError("The controlled page must belong to the guarded browser context.");
   }
-  const initialPages = options.guardedContext.context.pages();
-  let maximumObservedPages = initialPages.some((page) => page !== options.page)
-    ? Math.max(2, initialPages.length)
-    : initialPages.length;
-  options.guardedContext.context.on("page", (page) => {
-    if (page !== options.page) {
-      maximumObservedPages = Math.max(
-        2,
-        maximumObservedPages,
-        options.guardedContext.context.pages().length,
-      );
-    }
-  });
-  const getMaximumObservedPages = (): number => maximumObservedPages;
+  const topology = createPageTopologyObservation(options.guardedContext.context, options.page);
 
   const driver: PlaywrightInterpreterDriver = {
     assertChecked: (locator, equals, context) =>
-      withUniqueLocator(options, getMaximumObservedPages, locator, context, async (resolved) => {
+      withUniqueLocator(options, topology, locator, context, async (resolved) => {
         const actual = await resolved.isChecked();
         return actual === equals
           ? PASS_RESULT
@@ -258,7 +267,7 @@ export function createPlaywrightDriver(
             );
       }),
     assertCount: (locator, equals, context) =>
-      runOperation(options, getMaximumObservedPages, context, async () => {
+      runOperation(options, topology, context, async () => {
         const actual = (await inspectLocatorMatches(options.page, locator)).matchCount;
         return actual === equals
           ? PASS_RESULT
@@ -270,7 +279,7 @@ export function createPlaywrightDriver(
             );
       }),
     assertDisabled: (locator, equals, context) =>
-      withUniqueLocator(options, getMaximumObservedPages, locator, context, async (resolved) => {
+      withUniqueLocator(options, topology, locator, context, async (resolved) => {
         const actual = await resolved.isDisabled();
         return actual === equals
           ? PASS_RESULT
@@ -284,7 +293,7 @@ export function createPlaywrightDriver(
     assertHidden: (locator, context) =>
       withUniqueLocator(
         options,
-        getMaximumObservedPages,
+        topology,
         locator,
         context,
         async (resolved) => {
@@ -301,7 +310,7 @@ export function createPlaywrightDriver(
         true,
       ),
     assertText: (locator, equals, context) =>
-      withUniqueLocator(options, getMaximumObservedPages, locator, context, async (resolved) => {
+      withUniqueLocator(options, topology, locator, context, async (resolved) => {
         const actual = normalizeRenderedText(await resolved.innerText());
         const expected = normalizeRenderedText(equals);
         return actual === expected
@@ -314,7 +323,7 @@ export function createPlaywrightDriver(
             );
       }),
     assertUrl: (path, context) =>
-      runOperation(options, getMaximumObservedPages, context, async () => {
+      runOperation(options, topology, context, async () => {
         const actual = urlPath(options.page);
         return actual === path
           ? PASS_RESULT
@@ -326,7 +335,7 @@ export function createPlaywrightDriver(
             );
       }),
     assertValue: (locator, equals, context) =>
-      withUniqueLocator(options, getMaximumObservedPages, locator, context, async (resolved) => {
+      withUniqueLocator(options, topology, locator, context, async (resolved) => {
         const actual = await resolved.inputValue();
         return actual === equals
           ? PASS_RESULT
@@ -338,7 +347,7 @@ export function createPlaywrightDriver(
             );
       }),
     assertVisible: (locator, context) =>
-      withUniqueLocator(options, getMaximumObservedPages, locator, context, async (resolved) => {
+      withUniqueLocator(options, topology, locator, context, async (resolved) => {
         const actual = await resolved.isVisible();
         return actual
           ? PASS_RESULT
@@ -350,32 +359,32 @@ export function createPlaywrightDriver(
             );
       }),
     check: (locator, context) =>
-      withUniqueLocator(options, getMaximumObservedPages, locator, context, async (resolved) => {
+      withUniqueLocator(options, topology, locator, context, async (resolved) => {
         await resolved.check();
         return PASS_RESULT;
       }),
     click: (locator, context) =>
-      withUniqueLocator(options, getMaximumObservedPages, locator, context, async (resolved) => {
+      withUniqueLocator(options, topology, locator, context, async (resolved) => {
         await resolved.click();
         return PASS_RESULT;
       }),
     fill: (locator, value, context) =>
-      withUniqueLocator(options, getMaximumObservedPages, locator, context, async (resolved) => {
+      withUniqueLocator(options, topology, locator, context, async (resolved) => {
         await resolved.fill(value);
         return PASS_RESULT;
       }),
     reload: (context) =>
-      runOperation(options, getMaximumObservedPages, context, async () => {
+      runOperation(options, topology, context, async () => {
         await options.page.reload({ waitUntil: "load" });
         return PASS_RESULT;
       }),
     select: (locator, value, context) =>
-      withUniqueLocator(options, getMaximumObservedPages, locator, context, async (resolved) => {
+      withUniqueLocator(options, topology, locator, context, async (resolved) => {
         await resolved.selectOption({ value });
         return PASS_RESULT;
       }),
     visit: (path, context) =>
-      runOperation(options, getMaximumObservedPages, context, async () => {
+      runOperation(options, topology, context, async () => {
         await options.page.goto(path, { waitUntil: "load" });
         return PASS_RESULT;
       }),

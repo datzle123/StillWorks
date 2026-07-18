@@ -23,11 +23,10 @@ Workspace-only pinned Playwright primitives for MergeVow browser replay.
 - Fail-closed single-page topology: any observed popup or additional page is an infrastructure
   error, even when it closes immediately.
 
-Each operation has a bounded 50 ms post-operation window before its final guard and topology check.
-This lets immediately queued Playwright events become retained evidence; it is a cooperative
-observation window, not proof that arbitrarily delayed application effects cannot occur. A later
-retained event fails the next operation, while activity beginning after the final window is outside
-this V0 replay guarantee.
+Before and after each operation, the driver synchronizes with Chromium's target domain and snapshots
+the exact browser-context page targets. Target-created events retain the historical maximum even
+when a popup closes before Playwright exposes a `Page`. This protocol barrier replaces a timing
+delay; it still cannot prove that application effects scheduled after the final barrier never occur.
 
 The resolver observes the current DOM once. `SW-005` owns timeout, cancellation, and replay state;
 the driver cooperates without moving policy into contract data. Routing
