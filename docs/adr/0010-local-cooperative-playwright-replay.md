@@ -21,8 +21,9 @@ evidence, CLI, or PR-gate work could begin.
    observation so it cannot hide the retained guarded-transport failure.
 3. Replay requires exactly one controlled page. Once a popup or additional page is observed, the
    driver retains the maximum observed page count and fails closed even if the page immediately
-   closes. A bounded 50 ms post-operation observation window precedes the final check so immediately
-   queued Playwright events can be retained.
+   closes. Before and after every operation, a Chromium target-domain command acts as a protocol
+   barrier and snapshots page targets for the exact browser-context ID. Target-created events retain
+   short-lived activity that disappears before the snapshot.
 4. On step cancellation, the driver closes its controlled page. The interpreter remains the owner of
    cancellation, per-step timeout, and total-timeout classification.
 5. Application readiness probes only the normalized trusted loopback origin with a direct Node HTTP
@@ -48,9 +49,9 @@ evidence, CLI, or PR-gate work could begin.
   unreleased and has no recorder or CLI acquisition path.
 - An HTTP 404 or 500 is listener readiness, not an infrastructure verdict; later contract steps
   determine whether the application behavior is acceptable.
-- The post-operation observation window is cooperative and bounded. A later retained event fails the
-  next operation, but arbitrarily delayed effects beginning after the final window are outside this
-  V0 replay guarantee.
+- The target barrier removes wall-clock settlement and its platform race. It observes target events
+  and state causally preceding the barrier, but effects deliberately scheduled after the final
+  barrier remain outside this V0 replay guarantee.
 - Closing the page is safe because the interpreter stops after cancellation or timeout; a later
   operation cannot reuse that page.
 - Evidence capture, retries, `FLAKY`, report packages, exact-base loading, proposal status, and GitHub

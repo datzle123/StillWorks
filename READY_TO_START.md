@@ -33,7 +33,7 @@ vertical slice are built and tested. Recorder and CLI acquisition are not built 
 - `pnpm audit --audit-level low`: no known vulnerabilities
 - `@mergevow/contract`: 43 Vitest cases covering schema, hostile inputs, canonicalization, and hash
 - Contract package typecheck, clean build, package dry-run, and built-ESM parser smoke
-- `@mergevow/playwright-driver`: 48 real-Chromium and readiness cases covering all 14 driver methods,
+- `@mergevow/playwright-driver`: 50 real-Chromium and readiness cases covering all 14 driver methods,
   semantic locators, cancellation, assertion mismatch, loopback readiness, and the loopback
   origin validation, proxy and cookie isolation, requests, redirects, transport failures,
   unsupported realtime/worker APIs, and Service Worker blocking
