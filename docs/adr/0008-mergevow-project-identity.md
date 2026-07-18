@@ -24,6 +24,9 @@ snapshot, not legal clearance or reservation.
 5. The JSON Schema identifier uses the canonical GitHub document URL until a project-controlled
    domain exists.
 6. The Codex project skill is `build-mergevow`.
+7. Existing `SW-*` work-item identifiers remain the stable historical issue namespace. Renumbering
+   them would break issue, pull-request, commit, and document references; the prefix is not a current
+   package, command, or product identity.
 
 ## Consequences
 

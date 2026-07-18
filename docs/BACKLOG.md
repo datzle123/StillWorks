@@ -45,7 +45,7 @@ are independent.
 - Rejects executable surfaces, external navigation, excessive size, and excessive depth.
 - Includes valid, invalid, and malicious fixtures.
 
-**Outcome:** `@mergevow/contract` publishes a closed JSON Schema 2020-12 document, matching strict
+**Outcome:** `@mergevow/contract` provides a closed JSON Schema 2020-12 document, matching strict
 TypeScript types, bounded fail-closed parsing, and 30 tests across valid, invalid, and malicious
 inputs. Duplicate decoded keys, dangerous prototype keys, invalid Unicode/UTF-8, executable fields,
 external URL operands, and all named resource limits are rejected without mutating input.
