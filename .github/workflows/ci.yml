@@ -40,5 +40,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install Chromium
+        run: pnpm browser:install
+
       - name: Check preparation and code
         run: pnpm check

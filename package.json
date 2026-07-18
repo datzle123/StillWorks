@@ -9,6 +9,7 @@
     "node": ">=24.0.0"
   },
   "scripts": {
+    "browser:install": "playwright install --with-deps --only-shell chromium",
     "build": "pnpm -r --if-present build",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
     "ci": "pnpm check",
