@@ -409,6 +409,17 @@ export async function startActionRecorder(
       }
     };
 
+    const expireBrowserNavigationIntent = async (): Promise<void> => {
+      await page
+        .evaluate((name) => {
+          const state = (globalThis as Record<string, unknown>)[name] as
+            | RecorderDocumentState
+            | undefined;
+          state?.expireNavigationIntent();
+        }, stateName)
+        .catch(() => undefined);
+    };
+
     page.on("request", (request) => {
       if (!request.isNavigationRequest() || request.frame() !== page.mainFrame()) return;
       void enqueueOperation(() => {
@@ -432,13 +443,27 @@ export async function startActionRecorder(
       });
     });
     const clearFinishedNavigation = (request: Request): void => {
-      if (request !== currentNavigationRequest) return;
-      void enqueueOperation(() => {
-        if (request === currentNavigationRequest) currentNavigationRequest = undefined;
+      if (!request.isNavigationRequest() || request.frame() !== page.mainFrame()) return;
+      void enqueueOperation(async () => {
+        if (request !== currentNavigationRequest) return;
+        currentNavigationRequest = undefined;
+        await expireBrowserNavigationIntent();
       });
     };
     page.on("requestfailed", clearFinishedNavigation);
     page.on("requestfinished", clearFinishedNavigation);
+    page.on("dialog", (dialog) => {
+      const dismissal = dialog.dismiss().catch(() => undefined);
+      void enqueueOperation(async () => {
+        setFatal(
+          issue(
+            RECORDER_ISSUE_CODES.unsupportedAction,
+            "Browser dialogs are outside Contract V1 recording.",
+          ),
+        );
+        await dismissal;
+      });
+    });
 
     await guarded.context.exposeBinding(bindingName, (source, value: unknown) => {
       return enqueueOperation(async () => {
@@ -469,6 +494,10 @@ export async function startActionRecorder(
       await state?.flush();
     }, stateName);
     await queue;
+    if (fatalIssue !== undefined) {
+      startupIssue = fatalIssue;
+      throw new Error("Recorder startup failed.");
+    }
     const initialDocumentToken = await page.evaluate((name) => {
       const state = (globalThis as Record<string, unknown>)[name];
       if (state === null || typeof state !== "object") return undefined;

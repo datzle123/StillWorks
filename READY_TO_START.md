@@ -44,7 +44,7 @@ acquisition are not built yet.
 - Interpreter typecheck, clean build, package dry-run, and built-ESM state-machine smoke
 - `@mergevow/demo-todo-persistence`: 3 vertical-slice/report cases plus a runnable
   `PASS / PASS / REGRESSION` demo using fresh contexts
-- `@mergevow/recorder`: 27 real-Chromium cases covering all six actions, semantic refactors,
+- `@mergevow/recorder`: 31 real-Chromium cases covering all six actions, semantic refactors,
   standards-based accessible names, shadow DOM, mutation-safe locator proof, identity-based fill
   coalescing, causal navigation, GET/POST submit handling, record/replay, ambiguity,
   sensitive/unsupported controls, typed startup, guard/topology/transport failure, resource bounds,

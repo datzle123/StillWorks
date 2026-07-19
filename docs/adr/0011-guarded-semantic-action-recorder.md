@@ -33,8 +33,8 @@ selectors, scripts, or other executable contract data.
    Clicks without native action semantics, an explicit role, test ID, or inline action marker are
    treated as non-actions; a custom control must expose role semantics or a test ID to be recordable.
 6. Password controls fail before their value is read. File input, uncheck, multi-value select,
-   unsupported input types, frames, invalid/ambiguous locators, resource-limit violations, guarded
-   network failure, and any auxiliary page invalidate the whole recording.
+   unsupported input types, browser dialogs, frames, invalid/ambiguous locators, resource-limit
+   violations, guarded network failure, and any auxiliary page invalidate the whole recording.
 7. Current and historical page targets are checked with the SW-007A Chromium protocol barrier.
    Guarded policy and transport evidence takes precedence over page-event or locator errors.
 8. Browser event promises are capped at 128 and fill work is batched before Node's serialized queue;

@@ -117,6 +117,17 @@ describe("guarded Contract V1 action recorder", () => {
         case "/prevented-nav":
           response.end(html('<a href="/next" onclick="event.preventDefault()">Stay here</a>'));
           return;
+        case "/no-op-nav":
+          response.end(html('<a href="javascript:void(0)">No-op link</a>'));
+          return;
+        case "/beforeunload-dialog":
+          response.end(
+            html(
+              '<a href="/next">Try to leave</a>',
+              '<script>addEventListener("beforeunload", event => { event.preventDefault(); event.returnValue = ""; }, { once: true })</script>',
+            ),
+          );
+          return;
         case "/download-nav":
           response.end(html('<a href="/download-file" download>Download file</a>'));
           return;
@@ -190,6 +201,36 @@ describe("guarded Contract V1 action recorder", () => {
             ),
           );
           return;
+        case "/replacement-select":
+          response.end(
+            html(
+              '<label for="active-select">Choice</label><select id="active-select"><option value="a">A</option><option value="b">B</option></select>',
+              `<script>
+                const first = document.querySelector("#active-select");
+                first.addEventListener("input", () => {
+                  const replacement = first.cloneNode(true);
+                  replacement.value = first.value;
+                  first.replaceWith(replacement);
+                }, { once: true });
+              </script>`,
+            ),
+          );
+          return;
+        case "/replacement-check":
+          response.end(
+            html(
+              '<label><input id="active-check" type="checkbox">Accept terms</label>',
+              `<script>
+                const first = document.querySelector("#active-check");
+                first.addEventListener("input", () => {
+                  const replacement = first.cloneNode(true);
+                  replacement.checked = first.checked;
+                  first.replaceWith(replacement);
+                }, { once: true });
+              </script>`,
+            ),
+          );
+          return;
         case "/radio":
           response.end(html('<label><input type="radio" name="choice" value="a">Alpha</label>'));
           return;
@@ -207,6 +248,9 @@ describe("guarded Contract V1 action recorder", () => {
           response.statusCode = 302;
           response.setHeader("location", `${external.origin}/blocked?secret=startup-secret`);
           response.end();
+          return;
+        case "/startup-dialog":
+          response.end(html("", "<script>alert('startup dialog')</script>"));
           return;
         case "/startup-popup":
           response.end(html("", '<script>window.open("/next", "_blank")?.close()</script>'));
@@ -267,9 +311,11 @@ describe("guarded Contract V1 action recorder", () => {
   it("captures all six approved actions in source order as a frozen valid contract", async () => {
     const current = await start("/form");
     await current.page.getByLabel("Name").fill("Ada");
-    await current.page.getByLabel("Choice").click();
-    await current.page.keyboard.press("ArrowDown");
-    await current.page.keyboard.press("Enter");
+    // Type-ahead stays a trusted keyboard action without opening a platform-native popup.
+    const choice = current.page.getByLabel("Choice");
+    await choice.focus();
+    await current.page.keyboard.press("b");
+    expect(await choice.inputValue()).toBe("b");
     await current.page.getByLabel("Accept terms").check();
     await current.page.getByRole("button", { name: "Save" }).click();
     await current.page.reload();
@@ -462,6 +508,29 @@ describe("guarded Contract V1 action recorder", () => {
     });
   });
 
+  it("expires no-op link ownership before a later direct navigation", async () => {
+    const current = await start("/no-op-nav", "no-op-navigation");
+    await current.page.getByRole("link", { name: "No-op link" }).click();
+    await current.page.waitForTimeout(20);
+    await current.page.goto("/next");
+    await expect(current.stop()).resolves.toMatchObject({
+      contract: {
+        steps: [
+          { visit: "/no-op-nav" },
+          { click: { name: "No-op link", role: "link" } },
+          { visit: "/next" },
+        ],
+      },
+      ok: true,
+    });
+  });
+
+  it("fails closed when a beforeunload dialog cancels click navigation", async () => {
+    const current = await start("/beforeunload-dialog", "beforeunload-dialog");
+    await current.page.getByRole("link", { name: "Try to leave" }).click();
+    expectExactFailure(await current.stop(), RECORDER_ISSUE_CODES.unsupportedAction);
+  });
+
   it("does not let downloads or 204 responses own a later direct navigation", async () => {
     const download = await start("/download-nav", "download-navigation");
     const downloadPromise = download.page.waitForEvent("download");
@@ -482,12 +551,17 @@ describe("guarded Contract V1 action recorder", () => {
 
     const noContent = await start("/no-content-nav", "no-content-navigation");
     await noContent.page.getByRole("link", { name: "No content" }).click();
+    await noContent.page.evaluate(() => {
+      location.hash = "after-no-content";
+    });
+    await noContent.page.waitForURL(/#after-no-content$/u);
     await noContent.page.goto("/next");
     await expect(noContent.stop()).resolves.toMatchObject({
       contract: {
         steps: [
           { visit: "/no-content-nav" },
           { click: { name: "No content", role: "link" } },
+          { visit: "/no-content-nav#after-no-content" },
           { visit: "/next" },
         ],
       },
@@ -582,6 +656,52 @@ describe("guarded Contract V1 action recorder", () => {
     });
   });
 
+  it("captures select input before the application replaces the acted-on control", async () => {
+    const current = await start("/replacement-select", "replacement-select");
+    const choice = current.page.getByLabel("Choice");
+    await choice.focus();
+    await current.page.keyboard.press("b");
+    expect(await choice.inputValue()).toBe("b");
+
+    const result = await current.stop();
+    expect(result).toEqual({
+      contract: {
+        flow: "replacement-select",
+        steps: [
+          { visit: "/replacement-select" },
+          { select: { locator: { label: "Choice" }, value: "b" } },
+        ],
+        version: 1,
+      },
+      ok: true,
+    });
+    if (!result.ok) throw new Error("Expected replacement select recording.");
+    await expect(replayContract(result.contract)).resolves.toMatchObject({
+      executionVerdict: EXECUTION_VERDICTS.pass,
+    });
+  });
+
+  it("captures check input before the application replaces the acted-on control", async () => {
+    const current = await start("/replacement-check", "replacement-check");
+    const checkbox = current.page.getByLabel("Accept terms");
+    await checkbox.check();
+    expect(await checkbox.isChecked()).toBe(true);
+
+    const result = await current.stop();
+    expect(result).toEqual({
+      contract: {
+        flow: "replacement-check",
+        steps: [{ visit: "/replacement-check" }, { check: { label: "Accept terms" } }],
+        version: 1,
+      },
+      ok: true,
+    });
+    if (!result.ok) throw new Error("Expected replacement check recording.");
+    await expect(replayContract(result.contract)).resolves.toMatchObject({
+      executionVerdict: EXECUTION_VERDICTS.pass,
+    });
+  });
+
   it("uses an exact test ID only when richer semantics are unavailable", async () => {
     const current = await start("/testid", "test-id-fallback");
     await current.page.getByTestId("icon-action").click();
@@ -658,7 +778,7 @@ describe("guarded Contract V1 action recorder", () => {
     });
   });
 
-  it("fails the whole recording on external traffic, frames, or short-lived popups", async () => {
+  it("fails the whole recording on external traffic or short-lived popups", async () => {
     const externalSession = await start("/external", "external");
     external.requests.length = 0;
     await externalSession.page
@@ -672,17 +792,6 @@ describe("guarded Contract V1 action recorder", () => {
     expect(external.requests).toEqual([]);
     session = undefined;
 
-    const framed = await start("/frame", "frame");
-    await framed.page
-      .frameLocator('iframe[title="Embedded"]')
-      .getByRole("button", { name: "Inside frame" })
-      .click();
-    await expect(framed.stop()).resolves.toMatchObject({
-      issue: { code: RECORDER_ISSUE_CODES.unsupportedAction },
-      ok: false,
-    });
-    session = undefined;
-
     const popup = await start("/popup", "popup");
     await popup.page.getByRole("button", { name: "Open helper" }).click();
     await expect(popup.stop()).resolves.toMatchObject({
@@ -694,6 +803,8 @@ describe("guarded Contract V1 action recorder", () => {
   it("returns typed bounded startup failures without raw Playwright or URL data", async () => {
     for (const [startPath, code] of [
       ["/startup-external?local=secret-start", RECORDER_ISSUE_CODES.browserPolicy],
+      ["/startup-dialog", RECORDER_ISSUE_CODES.unsupportedAction],
+      ["/frame", RECORDER_ISSUE_CODES.unsupportedAction],
       ["/startup-popup", RECORDER_ISSUE_CODES.pageTopology],
     ] as const) {
       const captured = await startActionRecorder({
@@ -807,8 +918,10 @@ describe("guarded Contract V1 action recorder", () => {
       input.value = "scripted";
       input.dispatchEvent(new InputEvent("input", { bubbles: true }));
       select.value = "b";
+      select.dispatchEvent(new InputEvent("input", { bubbles: true }));
       select.dispatchEvent(new Event("change", { bubbles: true }));
       checkbox.checked = true;
+      checkbox.dispatchEvent(new InputEvent("input", { bubbles: true }));
       checkbox.dispatchEvent(new Event("change", { bubbles: true }));
       button.click();
     });

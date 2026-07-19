@@ -16,6 +16,7 @@ export interface RecorderInitScriptOptions {
 export interface RecorderDocumentState {
   readonly cleanup: () => void;
   readonly documentToken: string;
+  readonly expireNavigationIntent: () => void;
   readonly flush: () => Promise<void>;
 }
 
@@ -67,6 +68,7 @@ export function recorderInitScript(options: RecorderInitScriptOptions): void {
   );
   const originalFormSubmit = HTMLFormElement.prototype.submit;
   const confirmedNavigationEvents = new WeakSet<Event>();
+  const confirmedNavigationOwners = new WeakSet<NavigationOwner>();
   let accepting = true;
   let fillFrame: number | undefined;
   let navigationOwner: NavigationOwner | undefined;
@@ -463,13 +465,14 @@ export function recorderInitScript(options: RecorderInitScriptOptions): void {
         clearNavigationOwner();
         return;
       }
+      if (confirmedNavigationOwners.has(owner)) return;
       navigationOwnerTimer = setTimeout(() => {
         navigationOwnerTimer = undefined;
         if (navigationOwner !== owner) return;
         if (location.href !== owner.hrefBefore) {
           captureNavigation("navigate", owner.marker);
-          clearNavigationOwner();
         }
+        clearNavigationOwner();
       }, 0);
     });
   };
@@ -516,6 +519,15 @@ export function recorderInitScript(options: RecorderInitScriptOptions): void {
       if (!event.isTrusted) return;
       clearNavigationOwner();
       const target = eventElement(event);
+      if (target instanceof HTMLSelectElement) {
+        flushPendingFill();
+        if (target.multiple && target.selectedOptions.length !== 1) {
+          reject("unsupported", "Multi-value select actions are outside Contract V1.");
+          return;
+        }
+        emitAction("select", target, target.value);
+        return;
+      }
       if (target instanceof HTMLInputElement) {
         const type = target.type.toLowerCase();
         if (type === "password") {
@@ -526,7 +538,15 @@ export function recorderInitScript(options: RecorderInitScriptOptions): void {
           reject("unsupported", "File inputs are outside Contract V1.");
           return;
         }
-        if (["checkbox", "radio"].includes(type)) return;
+        if (["checkbox", "radio"].includes(type)) {
+          flushPendingFill();
+          if (!target.checked) {
+            reject("uncheck", "Contract V1 supports check but not uncheck.");
+            return;
+          }
+          emitAction("check", target);
+          return;
+        }
         if (
           ![
             "date",
@@ -560,35 +580,6 @@ export function recorderInitScript(options: RecorderInitScriptOptions): void {
   );
 
   addEventListener(
-    "change",
-    (event) => {
-      if (!event.isTrusted) return;
-      clearNavigationOwner();
-      flushPendingFill();
-      const target = eventElement(event);
-      if (target instanceof HTMLSelectElement) {
-        if (target.multiple && target.selectedOptions.length !== 1) {
-          reject("unsupported", "Multi-value select actions are outside Contract V1.");
-          return;
-        }
-        emitAction("select", target, target.value);
-        return;
-      }
-      if (
-        target instanceof HTMLInputElement &&
-        ["checkbox", "radio"].includes(target.type.toLowerCase())
-      ) {
-        if (!target.checked) {
-          reject("uncheck", "Contract V1 supports check but not uncheck.");
-          return;
-        }
-        emitAction("check", target);
-      }
-    },
-    true,
-  );
-
-  addEventListener(
     "submit",
     (event) => {
       if (!event.isTrusted) return;
@@ -599,7 +590,39 @@ export function recorderInitScript(options: RecorderInitScriptOptions): void {
           "unsupported",
           "Form submission must be initiated by a recorded submit-control click.",
         );
+        return;
       }
+      const form = event.target instanceof HTMLFormElement ? event.target : undefined;
+      const override =
+        submitter instanceof HTMLButtonElement || submitter instanceof HTMLInputElement
+          ? submitter
+          : undefined;
+      const method = override?.hasAttribute("formmethod") ? override.formMethod : form?.method;
+      const target = override?.hasAttribute("formtarget") ? override.formTarget : form?.target;
+      const action = override?.hasAttribute("formaction") ? override.formAction : form?.action;
+      let protocol: string | undefined;
+      try {
+        protocol = action === undefined ? undefined : new URL(action, location.href).protocol;
+      } catch {
+        protocol = undefined;
+      }
+      if (
+        form === undefined ||
+        !["get", "post"].includes(method ?? "") ||
+        !["", "_parent", "_self", "_top"].includes((target ?? "").toLowerCase()) ||
+        !["http:", "https:"].includes(protocol ?? "")
+      ) {
+        reject("unsupported", "The form submission target is outside Contract V1 recording.");
+        clearNavigationOwner();
+        return;
+      }
+      const owner = navigationOwner;
+      confirmedNavigationOwners.add(owner);
+      if (navigationOwnerTimer !== undefined) clearTimeout(navigationOwnerTimer);
+      navigationOwnerTimer = undefined;
+      queueMicrotask(() => {
+        if (navigationOwner === owner && event.defaultPrevented) clearNavigationOwner();
+      });
     },
     true,
   );
@@ -632,7 +655,18 @@ export function recorderInitScript(options: RecorderInitScriptOptions): void {
     reject("unsupported", "The recorder could not guard programmatic form submission.");
   }
 
-  addEventListener("beforeunload", flushPendingFill, true);
+  addEventListener(
+    "beforeunload",
+    () => {
+      flushPendingFill();
+      if (navigationOwner !== undefined) {
+        confirmedNavigationOwners.add(navigationOwner);
+        if (navigationOwnerTimer !== undefined) clearTimeout(navigationOwnerTimer);
+        navigationOwnerTimer = undefined;
+      }
+    },
+    true,
+  );
   addEventListener("pagehide", flushPendingFill, true);
 
   addEventListener(
@@ -682,6 +716,7 @@ export function recorderInitScript(options: RecorderInitScriptOptions): void {
         markedElements.clear();
       },
       documentToken,
+      expireNavigationIntent: clearNavigationOwner,
       flush: async () => {
         flushPendingFill();
         while (pendingBindings.size > 0) {
